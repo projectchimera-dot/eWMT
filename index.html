@@ -53,6 +53,8 @@ button,select,input{font:inherit;color:inherit}
 button{background:none;border:none;cursor:pointer}
 :focus-visible{outline:2px solid var(--accent-bright);outline-offset:2px;border-radius:4px}
 
+[hidden]{display:none !important}   /* .field's display:flex would otherwise keep hidden fields showing */
+
 .screen{display:none;height:100%}
 .screen.is-active{display:block}
 
@@ -94,7 +96,8 @@ button{background:none;border:none;cursor:pointer}
   margin-bottom:16px;
 }
 .hint{font-size:.78rem;color:var(--fg-faint);margin-top:10px;line-height:1.5}
-#voice-hint{margin-top:3px}
+#voice-hint,#image-hint{margin-top:3px}
+.hint.is-warn{color:var(--hold)}
 
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .field{display:flex;flex-direction:column;gap:7px;margin-bottom:14px}
@@ -210,11 +213,22 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-ra
 .blockbar{height:2px;background:var(--line-soft);flex-shrink:0;overflow:hidden}
 .blockbar__fill{height:100%;width:100%;background:var(--accent);transform:scaleX(0);transform-origin:0 50%;transition:transform .18s linear}
 
-.stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(14px,3vh,26px);padding:clamp(12px,3vh,26px) 16px;position:relative;min-height:0}
+.stage{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:clamp(14px,3vh,26px);padding:clamp(12px,3vh,26px) 16px;position:relative;min-height:0;
+  --grid:3;
+  --tall:100vh;
+  --cell-gap:clamp(6px,1.4vmin,13px);
+  --board:min(92vw,62vh,620px);
+}
+@supports (height:100dvh){.stage{--tall:100dvh}}
+/* With the image square above it, the grid gives up some height so both fit on screen */
+.stage.has-picture{
+  --board:min(92vw,max(160px,calc((var(--tall) - 160px - clamp(52px,12vh,104px)) * var(--grid) / (var(--grid) + 1))),620px);
+}
 
 .board{
-  display:grid;gap:clamp(6px,1.4vmin,13px);
-  width:min(92vw,62vh,620px);aspect-ratio:1;
+  display:grid;gap:var(--cell-gap);
+  width:var(--board);aspect-ratio:1;
 }
 .cell{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4%;
@@ -236,7 +250,15 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-ra
   overflow:hidden;
 }
 
-.answers{display:flex;gap:10px;justify-content:center;width:min(92vw,62vh,620px)}
+/* Image square: the same frame as a grid cell, sized to exactly one cell */
+.picture-slot{display:none;flex-shrink:0;width:calc((var(--board) - (var(--grid) - 1) * var(--cell-gap)) / var(--grid))}
+.stage.has-picture .picture-slot{display:grid}
+.shot{width:100%;aspect-ratio:1;border:1px solid var(--line-soft);border-radius:6px;overflow:hidden}
+.shot canvas{display:block;width:100%;height:100%;visibility:hidden}
+.picture.is-on .shot{background:var(--accent-wash);border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.picture.is-on .shot canvas{visibility:visible}
+
+.answers{display:flex;gap:10px;justify-content:center;width:var(--board)}
 .answer{
   flex:1;min-width:0;
   display:flex;flex-direction:column;align-items:center;gap:5px;
@@ -348,7 +370,9 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-ra
             <option value="pos_col">Position + colour</option>
             <option value="pos_aud">Position + voice</option>
             <option value="all">Position + colour + voice</option>
+            <option value="all_img">Position + colour + voice + image</option>
           </select>
+          <p class="hint" id="image-hint" hidden></p>
         </div>
         <div class="field">
           <label for="pace">Seconds per trial</label>
@@ -379,6 +403,7 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-ra
           <div class="bind"><span>Position</span><button type="button" class="keycap" data-bind="pos" id="cap-pos">Left</button></div>
           <div class="bind" id="bind-col"><span>Colour</span><button type="button" class="keycap" data-bind="col" id="cap-col">Up</button></div>
           <div class="bind" id="bind-aud"><span>Voice</span><button type="button" class="keycap" data-bind="aud" id="cap-aud">Right</button></div>
+          <div class="bind" id="bind-img"><span>Image</span><button type="button" class="keycap" data-bind="img" id="cap-img">Down</button></div>
         </div>
         <p class="hint">Click a key, then press the one you want. On a phone, tap the buttons under the grid instead. Escape pauses.</p>
       </div>
@@ -440,10 +465,13 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:none;border-ra
 
   <div class="blockbar"><div class="blockbar__fill" id="blockbar"></div></div>
 
-  <div class="stage">
+  <div class="stage" id="stage">
     <div class="overlay" id="overlay">
       <strong id="overlay-title">Get ready</strong>
       <span id="overlay-note"></span>
+    </div>
+    <div class="picture-slot" id="picture-slot">
+      <div class="cell picture" id="picture"><div class="shot"><canvas id="picture-canvas"></canvas></div></div>
     </div>
     <div class="board" id="board"></div>
     <div class="answers" id="answers"></div>
@@ -506,10 +534,17 @@ const WORDS    = NEGATIVE.concat(POSITIVE);
 const COLORS   = ['#FF5A5A','#FF9F45','#F2D14E','#3FD09A','#5B9BFF','#C58BFF'];
 const FACES    = Array.from({length:10}, (_, i) => 'assets/faces/face_' + i + '.jpg');
 
+// Image mode: these files, in a folder named "images" next to this page.
+const IMAGE_DIR = 'images/';
+const IMAGES    = ['1.webp','2.jpg','3.jpg','4.webp','5.webp','6.jpg','7.webp','8.webp','9.webp',
+                   '10.webp','11.webp','12.webp','13.webp','14.jpg','15.jpg','16.jpg','17.jpg'];
+const IMAGE_FIT = 'contain';    // 'contain' shows each image whole; 'cover' fills the square and crops the edges
+
 const TARGET_RATE = 0.30;       // chance a trial repeats the item n steps back
 const FACE_PX = 320;            // faces are pre-scaled to this once, at load
+const IMAGE_PX = 400;           // images too, the first time the image mode is picked
 const MINUTE_PRESETS = [5,10,15,20,30,45];
-const LABELS = {pos:'Position', col:'Colour', aud:'Voice'};
+const LABELS = {pos:'Position', col:'Colour', aud:'Voice', img:'Image'};
 
 /* ------------------------------------------------------------------ *
  * Settings and lifetime totals
@@ -519,7 +554,7 @@ const DEFAULTS = {
   grid:3, level:2, mode:'pos_col', paceSec:2.5,
   feedback:true, adaptive:true,
   sessionMode:'unlimited', minutes:20,
-  keys:{pos:'ArrowLeft', col:'ArrowUp', aud:'ArrowRight'},
+  keys:{pos:'ArrowLeft', col:'ArrowUp', aud:'ArrowRight', img:'ArrowDown'},
   voiceKind:'bank', bankVoice:'af_heart',
   sysVoiceURI:null, sysVoiceName:null, voiceRate:1.1
 };
@@ -551,12 +586,16 @@ function load(){
   }
   S.keys = Object.assign({}, DEFAULTS.keys, S.keys || {});
   Object.keys(S.keys).forEach(t => { S.keys[t] = normKey(S.keys[t]); });
+  // Saved layouts predate the Image key: if one already uses Down, Image takes the first free key
+  const taken = ['pos','col','aud'].map(t => S.keys[t]);
+  if (taken.indexOf(S.keys.img) >= 0)
+    S.keys.img = ['ArrowDown','ArrowUp','ArrowLeft','ArrowRight','s','d','f','j','k','l'].find(k => taken.indexOf(k) < 0);
   S.grid      = parseInt(S.grid, 10) === 4 ? 4 : 3;
   S.level     = clampInt(S.level, 1, 20, DEFAULTS.level);
   S.paceSec   = clampNum(S.paceSec, 1.2, 6, DEFAULTS.paceSec);
   S.minutes   = clampInt(S.minutes, 1, 180, DEFAULTS.minutes);
   S.voiceRate = clampNum(S.voiceRate, 0.6, 1.8, DEFAULTS.voiceRate);
-  if (['pos_col','pos_aud','all'].indexOf(S.mode) < 0) S.mode = DEFAULTS.mode;
+  if (['pos_col','pos_aud','all','all_img'].indexOf(S.mode) < 0) S.mode = DEFAULTS.mode;
   if (S.sessionMode !== 'timed') S.sessionMode = 'unlimited';
   if (S.voiceKind !== 'sys') S.voiceKind = 'bank';
   S.feedback = S.feedback !== false;
@@ -579,15 +618,19 @@ const $ = id => document.getElementById(id);
 const screens = {setup:$('setup-screen'), game:$('game-screen'), results:$('results-screen')};
 const board = $('board'), answersEl = $('answers'), overlay = $('overlay');
 const voiceSelect = $('voice-select'), blockbar = $('blockbar'), clockEl = $('clock');
+const stage = $('stage'), picture = $('picture'), pictureSlot = $('picture-slot');
+const pictureCanvas = $('picture-canvas');
+pictureCanvas.width = pictureCanvas.height = IMAGE_PX;
+const pictureG = pictureCanvas.getContext('2d');
 
 let n = 2, gridSize = 3, stimMs = 1500, isiMs = 1000;
-let activeList = ['pos'], usesColour = false, usesVoice = false, timedSession = false;
-let blockLen = 0, trials = [], responses = {pos:[], col:[], aud:[]};
+let activeList = ['pos'], usesColour = false, usesVoice = false, usesImage = false, timedSession = false;
+let blockLen = 0, trials = [], responses = {pos:[], col:[], aud:[], img:[]};
 let idx = 0, due = 0, timerId = 0;
 let running = false, paused = false, windowOpen = false, timeUp = false;
 let totals = {hits:0, misses:0, fa:0}, completed = 0, peakN = 1;
 let sessionMs = 0, committedMs = 0, lastTick = 0, limitMs = 0, lastClockText = '';
-let cells = [], activeCell = null, answerEls = {}, listening = null, wakeLock = null;
+let cells = [], activeCell = null, pictureOn = false, answerEls = {}, listening = null, wakeLock = null;
 
 /* ------------------------------------------------------------------ *
  * Formatting
@@ -610,7 +653,10 @@ function keyName(k){
 }
 function rateLabel(v){ return parseFloat(Number(v).toFixed(2)) + '\u00d7'; }
 function dayStamp(){ const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
-function streamsFor(m){ return {colour: m === 'pos_col' || m === 'all', voice: m === 'pos_aud' || m === 'all'}; }
+function streamsFor(m){
+  const every = m === 'all' || m === 'all_img';
+  return {colour: every || m === 'pos_col', voice: every || m === 'pos_aud', image: m === 'all_img'};
+}
 
 /* ------------------------------------------------------------------ *
  * Built-in voices: decoded once into AudioBuffers, played via Web Audio.
@@ -858,34 +904,61 @@ $('test-voice').addEventListener('click', function(){
 });
 
 /* ------------------------------------------------------------------ *
- * Faces: decoded and scaled once, drawn into a canvas per trial.
- * No image is inserted or decoded while you're playing.
+ * Faces and images: decoded and scaled once, drawn into a canvas per
+ * trial. No image is inserted or decoded while you're playing.
  * ------------------------------------------------------------------ */
-let faceCanvases = [], facesDone = false;
-const facesReady = Promise.all(FACES.map(src => new Promise(resolve => {
-  const img = new Image();
-  let settled = false;
-  const done = c => { if (!settled){ settled = true; clearTimeout(t); resolve(c); } };
-  const t = setTimeout(() => done(null), 10000);          // don't let a slow host block the game
-  img.onload = function(){
-    const draw = function(){
-      try {
-        const w = img.naturalWidth, h = img.naturalHeight;
-        if (!w || !h) return done(null);
-        const side = Math.min(w, h);
-        const c = document.createElement('canvas');
-        c.width = c.height = FACE_PX;
-        const g = c.getContext('2d');
-        g.imageSmoothingQuality = 'high';
-        g.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, FACE_PX, FACE_PX);
-        done(c);
-      } catch(e){ done(null); }
+// 'cover' crops to the centre square; 'contain' fits the whole picture inside it.
+function preparePicture(src, px, fit){
+  return new Promise(resolve => {
+    const img = new Image();
+    let settled = false;
+    const done = c => { if (!settled){ settled = true; clearTimeout(t); resolve(c); } };
+    const t = setTimeout(() => done(null), 10000);          // don't let a slow host block the game
+    img.onload = function(){
+      const draw = function(){
+        try {
+          const w = img.naturalWidth, h = img.naturalHeight;
+          if (!w || !h) return done(null);
+          const c = document.createElement('canvas');
+          c.width = c.height = px;
+          const g = c.getContext('2d');
+          g.imageSmoothingQuality = 'high';
+          if (fit === 'contain'){
+            const k = px / Math.max(w, h), dw = Math.round(w * k), dh = Math.round(h * k);
+            g.drawImage(img, 0, 0, w, h, Math.round((px - dw) / 2), Math.round((px - dh) / 2), dw, dh);
+          } else {
+            const side = Math.min(w, h);
+            g.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, px, px);
+          }
+          done(c);
+        } catch(e){ done(null); }
+      };
+      if (img.decode) img.decode().then(draw, draw); else draw();
     };
-    if (img.decode) img.decode().then(draw, draw); else draw();
-  };
-  img.onerror = function(){ done(null); };
-  img.src = src;
-}))).then(list => { faceCanvases = list.filter(Boolean); facesDone = true; });
+    img.onerror = function(){ done(null); };
+    img.src = src;
+  });
+}
+
+let faceCanvases = [], facesDone = false;
+const facesReady = Promise.all(FACES.map(src => preparePicture(src, FACE_PX, 'cover')))
+  .then(list => { faceCanvases = list.filter(Boolean); facesDone = true; });
+
+// Images load the first time the image mode is picked. A retry (from Start)
+// picks up files added or renamed since, without reloading the page.
+let imageCanvases = [], imagesMissing = [], imagesDone = false, imagesJob = null;
+function loadImages(retry){
+  if (imagesJob && !(retry && imagesDone && imagesMissing.length)) return imagesJob;
+  imagesDone = false;
+  imagesJob = Promise.all(IMAGES.map(f => preparePicture(IMAGE_DIR + f, IMAGE_PX, IMAGE_FIT))).then(list => {
+    imageCanvases = list.filter(Boolean);
+    imagesMissing = IMAGES.filter((f, i) => !list[i]);
+    imagesDone = true;
+    paintImageHint();
+    paintSummary();
+  });
+  return imagesJob;
+}
 
 /* ------------------------------------------------------------------ *
  * Settings <-> interface
@@ -927,18 +1000,49 @@ function reflectSettings(){
   const st = streamsFor(S.mode);
   $('bind-col').style.display = st.colour ? 'flex' : 'none';
   $('bind-aud').style.display = st.voice ? 'flex' : 'none';
+  $('bind-img').style.display = st.image ? 'flex' : 'none';
   $('voice-region').style.display = st.voice ? 'block' : 'none';
   $('controls-region').classList.toggle('region--wide', !st.voice);
 
   $('cap-pos').textContent = keyName(S.keys.pos);
   $('cap-col').textContent = keyName(S.keys.col);
   $('cap-aud').textContent = keyName(S.keys.aud);
+  $('cap-img').textContent = keyName(S.keys.img);
 
-  $('setup-summary').textContent = (st.colour && st.voice ? 'Three streams' : 'Two streams') + ', ' +
-    (timed ? S.minutes + ' minutes' : 'no time limit');
+  if (st.image) loadImages();
+  paintImageHint();
+  paintSummary();
 
   $('today-trained').textContent = duration(T.dayKey === dayStamp() ? T.dayMs : 0);
   $('total-trained').textContent = duration(T.allMs);
+}
+
+function imagesBlocked(){ return streamsFor(S.mode).image && imagesDone && imageCanvases.length < 2; }
+
+// The line beside Start: what the session holds, or why it can't start yet.
+function paintSummary(){
+  const st = streamsFor(S.mode), el = $('setup-summary');
+  const count = 1 + [st.colour, st.voice, st.image].filter(Boolean).length;
+  const blocked = imagesBlocked();
+  el.textContent = blocked
+    ? 'Can’t start until the images are found. See Stimuli above.'
+    : ['', '', 'Two streams', 'Three streams', 'Four streams'][count] + ', ' +
+      (S.sessionMode === 'timed' ? S.minutes + ' minutes' : 'no time limit');
+  el.classList.toggle('is-warn', blocked);
+}
+
+function paintImageHint(){
+  const el = $('image-hint');
+  el.hidden = !streamsFor(S.mode).image;
+  if (el.hidden) return;
+  const found = imageCanvases.length, total = IMAGES.length;
+  let text, warn = true;
+  if (!imagesDone){ text = 'Loading images from the images folder…'; warn = false; }
+  else if (!found) text = 'No images found. Put them in a folder named “images” next to this page.';
+  else if (imagesMissing.length) text = 'Found ' + found + ' of ' + total + ' images. Couldn’t open ' + imagesMissing.join(', ') + '.';
+  else { text = 'All ' + total + ' images found.'; warn = false; }
+  el.textContent = text;
+  el.classList.toggle('is-warn', warn);
 }
 
 function readUI(){
@@ -1084,6 +1188,7 @@ function buildAnswers(){
 }
 
 function clearBoard(){
+  if (pictureOn){ picture.classList.remove('is-on'); pictureOn = false; }
   if (!activeCell) return;
   activeCell.el.classList.remove('is-on');
   activeCell.word.textContent = '';
@@ -1097,6 +1202,12 @@ function showStimulus(t){
   if (usesColour){ c.word.textContent = t.word; c.word.style.color = COLORS[t.col]; }
   c.el.classList.add('is-on');
   activeCell = c;
+  if (usesImage && imageCanvases[t.img]){
+    pictureG.clearRect(0, 0, IMAGE_PX, IMAGE_PX);
+    pictureG.drawImage(imageCanvases[t.img], 0, 0);
+    picture.classList.add('is-on');
+    pictureOn = true;
+  }
 }
 
 function flash(type, state){
@@ -1112,11 +1223,11 @@ function showOverlay(title, note){
   $('overlay-title').textContent = title;
   $('overlay-note').textContent = note || '';
   overlay.classList.add('is-on');
-  board.style.visibility = 'hidden';
+  board.style.visibility = pictureSlot.style.visibility = 'hidden';
 }
 function hideOverlay(){
   overlay.classList.remove('is-on');
-  board.style.visibility = 'visible';
+  board.style.visibility = pictureSlot.style.visibility = 'visible';
 }
 
 /* ------------------------------------------------------------------ *
@@ -1142,9 +1253,10 @@ function makeTrials(){
   const aud = sequence(WORDS.length);
   const word = sequence(WORDS.length);
   const face = sequence(Math.max(1, faceCanvases.length));
+  const img = sequence(Math.max(1, imageCanvases.length));
   trials = [];
   for (let i = 0; i < blockLen; i++){
-    trials.push({pos:pos[i], col:col[i], aud:aud[i], face:face[i], word:WORDS[word[i]], spoken:WORDS[aud[i]]});
+    trials.push({pos:pos[i], col:col[i], aud:aud[i], img:img[i], face:face[i], word:WORDS[word[i]], spoken:WORDS[aud[i]]});
   }
 }
 
@@ -1159,15 +1271,23 @@ function startClicked(){
   const wantBank = st.voice && S.voiceKind === 'bank' && bankCovers;
   if (st.voice && !wantBank && synth){ try { synth.resume(); } catch(e){} sysSpeak(WORDS[0], true); }
 
+  const imageJob = st.image ? loadImages(true) : Promise.resolve(null);
   const btn = $('start-btn'), again = $('again-btn');
   btn.disabled = again.disabled = true;
-  btn.textContent = again.textContent = facesDone ? 'Getting ready…' : 'Loading faces…';
+  btn.textContent = again.textContent = !facesDone ? 'Loading faces…'
+    : (st.image && !imagesDone) ? 'Loading images…' : 'Getting ready…';
 
   const voiceJob = wantBank ? decodeVoice(S.bankVoice).catch(() => null) : Promise.resolve(null);
-  Promise.all([facesReady, voiceJob]).then(res => {
+  Promise.all([facesReady, voiceJob, imageJob]).then(res => {
     btn.disabled = again.disabled = false;
     btn.textContent = 'Start session';
     again.textContent = 'Train again';
+    if (st.image && imageCanvases.length < 2){     // nothing to remember: stay on setup and say why
+      show('setup');
+      const still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+      $('image-hint').scrollIntoView({block:'center', behavior: still ? 'auto' : 'smooth'});
+      return;
+    }
     liveClips = res[1];                            // null means device voice (or fallback)
     begin();
   });
@@ -1187,9 +1307,13 @@ function begin(){
   peakN = n;
   usesColour = st.colour;
   usesVoice = st.voice;
+  usesImage = st.image;
   activeList = ['pos'];
   if (usesColour) activeList.push('col');
   if (usesVoice) activeList.push('aud');
+  if (usesImage) activeList.push('img');
+  stage.style.setProperty('--grid', gridSize);
+  stage.classList.toggle('has-picture', usesImage);
 
   const pace = Math.round(S.paceSec * 1000);
   stimMs = Math.round(pace * 0.6);
@@ -1223,7 +1347,8 @@ function startBlock(){
   blockLen = 20 + n * n;
   makeTrials();
   idx = 0;
-  responses = {pos:new Array(blockLen).fill(false), col:new Array(blockLen).fill(false), aud:new Array(blockLen).fill(false)};
+  responses = {pos:new Array(blockLen).fill(false), col:new Array(blockLen).fill(false),
+               aud:new Array(blockLen).fill(false), img:new Array(blockLen).fill(false)};
   $('level').textContent = n + '-back';
   $('count').textContent = '1 / ' + blockLen;
   blockbar.style.transform = 'scaleX(0)';
@@ -1338,7 +1463,7 @@ function togglePause(){
     lastTick = performance.now();
     unlockAudio();                                 // resume is a click or key press
     $('pause-btn').textContent = 'Pause';
-    responses.pos[idx] = responses.col[idx] = responses.aud[idx] = false;
+    responses.pos[idx] = responses.col[idx] = responses.aud[idx] = responses.img[idx] = false;
     showOverlay('Resuming', 'The interrupted trial will be shown again');
     schedule(performance.now() + 1200, () => {
       if (!running || paused) return;
